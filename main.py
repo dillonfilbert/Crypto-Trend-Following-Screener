@@ -7,8 +7,8 @@ import sys
 
 # --- AMBIL RAHASIA DARI GITHUB ---
 try:
-    TOKEN_TELEGRAM = os.environ["8292417810:AAHPVCeGjw0uXCxuJzQ5t20VykPJq8I5OMc"]
-    CHAT_ID = os.environ["6676128591"]
+    TOKEN_TELEGRAM = os.environ["TELEGRAM_TOKEN"]
+    CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 except KeyError:
     print("Error: Token/Chat ID belum di-set di GitHub Secrets!")
     sys.exit()
@@ -80,4 +80,5 @@ if __name__ == "__main__":
         if hasil:
             kirim_notif(hasil)
             print(f"Notif dikirim: {coin}")
+
     print("Selesai.")
