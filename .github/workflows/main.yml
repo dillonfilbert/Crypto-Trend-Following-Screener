@@ -1,0 +1,28 @@
+name: Screener Crypto 15 Menit
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'  # Jalan setiap 15 menit
+  workflow_dispatch:      # Supaya bisa ditest run manual
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Library
+        run: pip install -r requirements.txt
+
+      - name: Jalankan Screener
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python main.py
