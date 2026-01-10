@@ -2,7 +2,7 @@ name: Screener Crypto 15 Menit
 
 on:
   schedule:
-    - cron: '*/30 * * * *'  # Jalan setiap 30 menit
+    - cron: '7,37 * * * *'
   workflow_dispatch:      # Supaya bisa ditest run manual
 
 jobs:
