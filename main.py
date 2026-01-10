@@ -17,14 +17,11 @@ if not TOKEN_TELEGRAM or not CHAT_ID:
     print("Error: Token/Chat ID belum di-set!")
     sys.exit()
 
-# === GANTI KE BYBIT (FUTURES/SWAP) ===
-# Bybit Futures punya likuiditas yang mirip dengan Binance Futures.
-# Chart-nya jauh lebih mulus daripada Binance US Spot.
-exchange = ccxt.bybit({
+# === KRAKEN (USD ONLY) ===
+# Kita pakai Kraken karena Legal di US (Anti-Blokir GitHub).
+# Kita hanya ambil pair USD (Fiat) untuk data paling mulus.
+exchange = ccxt.kraken({
     'enableRateLimit': True,
-    'options': {
-        'defaultType': 'swap',  # KITA PAKAI DATA FUTURES (SWAP)
-    }
 })
 
 def kirim_notif(pesan):
@@ -34,52 +31,53 @@ def kirim_notif(pesan):
     except Exception as e:
         print(f"Gagal kirim Telegram: {e}")
 
-# 1. AMBIL TOP VOLUME (Bybit Futures)
+# 1. AMBIL TOP VOLUME (Hanya USD)
 def get_top_volume_pairs():
-    print("Sedang mengambil data Top Volume (Bybit Futures)...")
+    print("Sedang mengambil data Top Volume (Kraken USD)...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
         for symbol, data in tickers.items():
-            # Filter hanya USDT Perpetual (Simbol biasanya BTC/USDT:USDT)
-            if 'USDT' in symbol and ':' in symbol:
+            # FILTER KETAT: Hanya yang belakangnya /USD
+            if symbol.endswith('/USD'):
+                # Buang Pair Forex (Mata uang vs Mata uang)
+                if 'EUR/' in symbol or 'GBP/' in symbol or 'AUD/' in symbol or 'USDT/' in symbol or 'USDC/' in symbol:
+                    continue
+                
+                # Buang Stablecoin vs USD (USDT/USD, USDC/USD) - Kita mau cari Volatility
+                if symbol.startswith('USDT') or symbol.startswith('USDC') or symbol.startswith('DAI'):
+                    continue
+
                 vol = data['quoteVolume'] if data['quoteVolume'] else 0
                 pairs.append({'symbol': symbol, 'val': vol})
         
         hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
-        print(f"✅ Sukses ambil {len(hasil)} koin Top Volume.")
+        print(f"✅ Sukses ambil {len(hasil)} koin Top Volume (USD).")
         return hasil
     except Exception as e:
         print(f"❌ ERROR AMBIL VOLUME: {e}") 
         return []
 
-# 2. AMBIL TOP TICKS (Bybit Futures)
+# 2. AMBIL TOP TICKS (Hanya USD)
 def get_top_ticks_pairs():
-    # Note: Bybit API mungkin tidak selalu menyediakan 'count' (jumlah trade) secara gamblang di semua endpoint.
-    # Jadi kita gunakan Volume sebagai proxy utama jika count tidak tersedia, 
-    # atau kita coba ambil data openInterest/volume 24h.
-    # TAPI, untuk Bybit, Volume sudah cukup mewakili keramaian.
-    # Biar aman, kita pakai logika Volume juga tapi ambil irisan berbeda atau tetap coba count jika ada.
-    print("Sedang mengambil data Top Ticks (Bybit Futures)...")
+    print("Sedang mengambil data Top Ticks (Kraken USD)...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
         for symbol, data in tickers.items():
-             if 'USDT' in symbol and ':' in symbol:
-                # Cek apakah field 'count' ada (jumlah trade)
-                # Di CCXT Bybit, kadang info ini ada di 'info'
-                count = 0
-                if 'info' in data and 'turnover24h' in data['info']:
-                     # Bybit pakai Turnover sebagai indikator aktivitas
-                     count = float(data['info']['turnover24h'])
-                elif 'quoteVolume' in data:
-                     count = data['quoteVolume']
-                
-                pairs.append({'symbol': symbol, 'val': count})
+             if symbol.endswith('/USD'):
+                # Filter Forex & Stablecoin sama seperti di atas
+                if 'EUR/' in symbol or 'GBP/' in symbol or 'AUD/' in symbol or 'USDT/' in symbol or 'USDC/' in symbol:
+                    continue
+                if symbol.startswith('USDT') or symbol.startswith('USDC') or symbol.startswith('DAI'):
+                    continue
+
+                # Di Kraken, Quote Volume sangat berkorelasi dengan aktivitas ticks
+                vol = data['quoteVolume'] if data['quoteVolume'] else 0
+                pairs.append({'symbol': symbol, 'val': vol})
         
-        # Kita ambil Top 20
         hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(20)['symbol'].tolist()
-        print(f"✅ Sukses ambil {len(hasil)} koin Top Ticks/Turnover.")
+        print(f"✅ Sukses ambil {len(hasil)} koin Top Activity (USD).")
         return hasil
     except Exception as e:
         print(f"❌ ERROR AMBIL TICKS: {e}")
@@ -105,8 +103,8 @@ def analyze_market(symbol, max_gap, source_label):
         stoch = ta.stoch(df_15m['h'], df_15m['l'], df_15m['c'], k=5, d=3, smooth_k=3)
         df_15m['stoch_k'] = stoch['STOCHk_5_3_3']
         
-        # === MODE ANTI TELAT ===
-        idx = -2  # Ambil Candle Close
+        # === MODE ANTI TELAT (Idx -2) ===
+        idx = -2  
         
         price = df_15m['c'].iloc[idx]
         e13, e21, e100 = df_15m['ema13'].iloc[idx], df_15m['ema21'].iloc[idx], df_15m['ema100'].iloc[idx]
@@ -130,8 +128,8 @@ def analyze_market(symbol, max_gap, source_label):
 
         icon = "💎" if source_label == "VOLUME" else "⚡"
         
-        # Bersihkan nama symbol biar enak dibaca (Hapus :USDT)
-        clean_symbol = symbol.split(':')[0]
+        # Rapikan nama symbol (Hapus /USD biar ringkas di notif)
+        clean_symbol = symbol.replace('/USD', '')
 
         if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
             if bullish_cross:
@@ -151,7 +149,7 @@ def analyze_market(symbol, max_gap, source_label):
         return None
 
 if __name__ == "__main__":
-    print("🚀 Mulai Scanning (Bybit Futures)...")
+    print("🚀 Mulai Scanning (Kraken USD Only)...")
     
     # Ambil Data
     list_vol = get_top_volume_pairs()
