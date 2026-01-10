@@ -68,7 +68,7 @@ def analyze_market(symbol, max_gap, source_label):
         stoch = ta.stoch(df_15m['h'], df_15m['l'], df_15m['c'], k=5, d=3, smooth_k=3)
         df_15m['stoch_k'] = stoch['STOCHk_5_3_3']
         
-        idx = -1
+        idx = -2
         price = df_15m['c'].iloc[idx]
         e13, e21, e100 = df_15m['ema13'].iloc[idx], df_15m['ema21'].iloc[idx], df_15m['ema100'].iloc[idx]
         stoch_k = df_15m['stoch_k'].iloc[idx]
@@ -132,3 +132,4 @@ if __name__ == "__main__":
         if hasil:
             kirim_notif(hasil)
             print(f"Notif: {coin}")
+
