@@ -16,6 +16,7 @@ except KeyError:
 exchange = ccxt.binance() 
 
 def kirim_notif(pesan):
+    # Mengirim pesan ke Telegram
     url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage?chat_id={CHAT_ID}&text={pesan}&parse_mode=Markdown"
     requests.get(url)
 
@@ -53,40 +54,49 @@ def analyze_market(symbol):
         idx = -1
         price = df_15m['c'].iloc[idx]
         e13, e21, e100 = df_15m['ema13'].iloc[idx], df_15m['ema21'].iloc[idx], df_15m['ema100'].iloc[idx]
-        stoch_k = df_15m['stoch_k'].iloc[idx]
         
-        # Data candle sebelumnya (untuk cek crossing/curve)
+        # Data Current & Previous
+        stoch_k = df_15m['stoch_k'].iloc[idx]       # Stoch Sekarang
+        stoch_k_prev = df_15m['stoch_k'].iloc[idx-1] # Stoch Candle Sebelumnya
+        
         e13_prev, e21_prev = df_15m['ema13'].iloc[idx-1], df_15m['ema21'].iloc[idx-1]
         
         # Hitung Gap EMA (%)
         gap = abs(e13 - e21) / e21 * 100
 
+        # === LOGIKA BARU: STOCHASTIC FLEXIBLE (OR) ===
+        # Long: Diterima jika stoch sekarang < 40 ATAU stoch kemarin < 40
+        is_cheap = (stoch_k < 40) or (stoch_k_prev < 40)
+        
+        # Short: Diterima jika stoch sekarang > 60 ATAU stoch kemarin > 60
+        is_expensive = (stoch_k > 60) or (stoch_k_prev > 60)
+
         # === SKENARIO 1: BULLISH (LONG) ===
-        # Syarat: Harga > EMA 100 & Stoch < 40 (Murah)
-        if (price > e100 and e13 > e100 and e21 > e100 and stoch_k < 40):
+        if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
             is_cross_up = (e13 > e21) and (e13_prev <= e21_prev)
-            is_bounce_up = (gap < 0.3) and (e13 > e13_prev) # Melengkung naik
+            is_bounce_up = (gap < 0.3) and (e13 > e13_prev) 
             
             if is_cross_up or is_bounce_up:
                 trigger = "⚔️ GOLDEN CROSS" if is_cross_up else "🧲 BOUNCE UP"
                 return (f"🟢 *LONG SIGNAL: {symbol}*\n"
                         f"Action: {trigger}\n"
                         f"Price: {price}\n"
-                        f"Stoch: {stoch_k:.2f} (Oversold)\n"
+                        f"Stoch Now: {stoch_k:.2f}\n"
+                        f"Stoch Prev: {stoch_k_prev:.2f}\n"
                         f"ADX 2H: {adx_val:.2f}")
 
         # === SKENARIO 2: BEARISH (SHORT) ===
-        # Syarat: Harga < EMA 100 & Stoch > 60 (Mahal)
-        elif (price < e100 and e13 < e100 and e21 < e100 and stoch_k > 60):
+        elif (price < e100 and e13 < e100 and e21 < e100 and is_expensive):
             is_cross_down = (e13 < e21) and (e13_prev >= e21_prev)
-            is_resist_down = (gap < 0.3) and (e13 < e13_prev) # Melengkung turun
+            is_resist_down = (gap < 0.3) and (e13 < e13_prev) 
             
             if is_cross_down or is_resist_down:
                 trigger = "💀 DEAD CROSS" if is_cross_down else "🧱 REJECT/RESIST"
                 return (f"🔴 *SHORT SIGNAL: {symbol}*\n"
                         f"Action: {trigger}\n"
                         f"Price: {price}\n"
-                        f"Stoch: {stoch_k:.2f} (Overbought)\n"
+                        f"Stoch Now: {stoch_k:.2f}\n"
+                        f"Stoch Prev: {stoch_k_prev:.2f}\n"
                         f"ADX 2H: {adx_val:.2f}")
 
         return None
@@ -95,7 +105,7 @@ def analyze_market(symbol):
         return None
 
 if __name__ == "__main__":
-    print("Mulai Scanning Long & Short...")
+    print("Mulai Scanning dengan Smart Stochastic...")
     coins = get_top_volume_pairs()
     for coin in coins:
         hasil = analyze_market(coin)
