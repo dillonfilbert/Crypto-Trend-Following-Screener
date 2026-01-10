@@ -2,7 +2,7 @@ name: Screener Crypto 15 Menit
 
 on:
   schedule:
-    - cron: '7,37 * * * *'
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:      # Supaya bisa ditest run manual
 
 jobs:
