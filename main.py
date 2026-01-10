@@ -17,9 +17,13 @@ if not TOKEN_TELEGRAM or not CHAT_ID:
     print("Error: Token/Chat ID belum di-set!")
     sys.exit()
 
-exchange = ccxt.binance({
-    'enableRateLimit': True,  # Penting supaya ga dianggap spam oleh Binance
-    'options': {'defaultType': 'future'} # Fokus ke Futures (biasanya datanya lebih lengkap/liquid)
+# === BAGIAN PENTING: GANTI EXCHANGE ===
+# Kita pakai BINANCE US supaya tidak diblokir oleh Server GitHub (yang lokasi di USA)
+# Datanya 99% sama dengan Global, jadi sinyal tetap VALID.
+exchange = ccxt.binanceus({
+    'enableRateLimit': True,
+    # Kita tidak pakai 'future' karena Binance US cuma ada Spot. 
+    # Tapi tenang, harga Spot & Future itu mirroring/kembar.
 })
 
 def kirim_notif(pesan):
@@ -29,32 +33,35 @@ def kirim_notif(pesan):
     except Exception as e:
         print(f"Gagal kirim Telegram: {e}")
 
-# 1. AMBIL TOP VOLUME (Dengan DEBUG ERROR)
+# 1. AMBIL TOP VOLUME 
 def get_top_volume_pairs():
-    print("Sedang mengambil data Top Volume...")
+    print("Sedang mengambil data Top Volume (Binance US)...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
         for symbol, data in tickers.items():
-            if '/USDT' in symbol and 'UP/' not in symbol and 'DOWN/' not in symbol:
+            # Filter USDT
+            if '/USDT' in symbol:
                 vol = data['quoteVolume'] if data['quoteVolume'] else 0
                 pairs.append({'symbol': symbol, 'val': vol})
         
+        # Kita ambil Top 50 dari market US
         hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
         print(f"✅ Sukses ambil {len(hasil)} koin Top Volume.")
         return hasil
     except Exception as e:
-        print(f"❌ ERROR AMBIL VOLUME: {e}") # <--- INI AKAN MUNCUL DI LOG JIKA ERROR
+        print(f"❌ ERROR AMBIL VOLUME: {e}") 
         return []
 
-# 2. AMBIL TOP TICKS (Dengan DEBUG ERROR)
+# 2. AMBIL TOP TICKS
 def get_top_ticks_pairs():
-    print("Sedang mengambil data Top Ticks...")
+    print("Sedang mengambil data Top Ticks (Binance US)...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
         for symbol, data in tickers.items():
-            if '/USDT' in symbol and 'UP/' not in symbol and 'DOWN/' not in symbol:
+            if '/USDT' in symbol:
+                # Binance US juga punya data 'count' (jumlah trade)
                 count = data['info']['count'] if 'info' in data and 'count' in data['info'] else 0
                 pairs.append({'symbol': symbol, 'val': int(count)})
         
@@ -62,13 +69,13 @@ def get_top_ticks_pairs():
         print(f"✅ Sukses ambil {len(hasil)} koin Top Ticks.")
         return hasil
     except Exception as e:
-        print(f"❌ ERROR AMBIL TICKS: {e}") # <--- INI AKAN MUNCUL DI LOG JIKA ERROR
+        print(f"❌ ERROR AMBIL TICKS: {e}")
         return []
 
 # --- ANALISA UTAMA ---
 def analyze_market(symbol, max_gap, source_label):
     try:
-        # Cek Big Trend (ADX)
+        # Cek Big Trend (ADX 2H)
         bars_2h = exchange.fetch_ohlcv(symbol, timeframe='2h', limit=50)
         df_2h = pd.DataFrame(bars_2h, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         adx_val = ta.adx(df_2h['h'], df_2h['l'], df_2h['c'], length=14)['ADX_14'].iloc[-2]
@@ -124,13 +131,12 @@ def analyze_market(symbol, max_gap, source_label):
         return None
 
     except Exception as e:
-        # Kita skip error kecil per koin biar ga spam log, 
-        # tapi kalau mau debug bisa uncomment print di bawah ini
+        # Debugging: Uncomment baris bawah kalau mau lihat error per koin
         # print(f"Error analisa {symbol}: {e}")
         return None
 
 if __name__ == "__main__":
-    print("🚀 Mulai Scanning (Vol:50 | Ticks:20) [Mode: Debug]...")
+    print("🚀 Mulai Scanning (Binance US)...")
     
     # Ambil Data
     list_vol = get_top_volume_pairs()
@@ -138,18 +144,18 @@ if __name__ == "__main__":
     
     target_coins = {}
 
-    # 1. Ticks (Gap Longgar)
+    # 1. Ticks
     for coin in list_ticks:
         target_coins[coin] = {'gap': GAP_LOOSE, 'label': 'TICKS'}
 
-    # 2. Volume (Gap Ketat) - Prioritas
+    # 2. Volume
     for coin in list_vol:
         target_coins[coin] = {'gap': GAP_STRICT, 'label': 'VOLUME'}
 
     print(f"📊 Total Koin Unik: {len(target_coins)}")
     
     if len(target_coins) == 0:
-        print("⚠️ PERINGATAN: Tidak ada koin yang diambil. Cek error message di atas!")
+        print("⚠️ PERINGATAN: Masih 0 koin? Cek log error di atas.")
     
     for coin, config in target_coins.items():
         hasil = analyze_market(coin, config['gap'], config['label'])
