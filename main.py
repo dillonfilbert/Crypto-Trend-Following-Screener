@@ -5,18 +5,18 @@ import requests
 import os
 import sys
 
-# --- AMBIL RAHASIA DARI GITHUB ---
-try:
-    TOKEN_TELEGRAM = os.environ["TELEGRAM_TOKEN"]
-    CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-except KeyError:
-    print("Error: Token/Chat ID belum di-set di GitHub Secrets!")
+# --- CONFIG ---
+TOKEN_TELEGRAM = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+MAX_GAP_PERCENT = 0.5  # Kita longgarkan dikit buat Altcoin, krn filter kita skrg pakai V-Shape
+
+if not TOKEN_TELEGRAM or not CHAT_ID:
+    print("Error: Token/Chat ID belum di-set!")
     sys.exit()
 
 exchange = ccxt.binance() 
 
 def kirim_notif(pesan):
-    # Mengirim pesan ke Telegram
     url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage?chat_id={CHAT_ID}&text={pesan}&parse_mode=Markdown"
     requests.get(url)
 
@@ -38,7 +38,6 @@ def analyze_market(symbol):
         df_2h = pd.DataFrame(bars_2h, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         adx_val = ta.adx(df_2h['h'], df_2h['l'], df_2h['c'], length=14)['ADX_14'].iloc[-2]
         
-        # Filter Sideways (ADX Lemah)
         if adx_val < 25: return None
 
         # 2. CEK TIMEFRAME EKSEKUSI (15M)
@@ -51,53 +50,58 @@ def analyze_market(symbol):
         stoch = ta.stoch(df_15m['h'], df_15m['l'], df_15m['c'], k=5, d=3, smooth_k=3)
         df_15m['stoch_k'] = stoch['STOCHk_5_3_3']
         
+        # --- AMBIL DATA 3 TITIK (NOW, PREV, PREV-2) ---
         idx = -1
         price = df_15m['c'].iloc[idx]
-        e13, e21, e100 = df_15m['ema13'].iloc[idx], df_15m['ema21'].iloc[idx], df_15m['ema100'].iloc[idx]
         
-        # Data Current & Previous
-        stoch_k = df_15m['stoch_k'].iloc[idx]       # Stoch Sekarang
-        stoch_k_prev = df_15m['stoch_k'].iloc[idx-1] # Stoch Candle Sebelumnya
+        # Data Sekarang (t)
+        e13 = df_15m['ema13'].iloc[idx]
+        e21 = df_15m['ema21'].iloc[idx]
+        e100 = df_15m['ema100'].iloc[idx]
+        stoch_k = df_15m['stoch_k'].iloc[idx]
         
-        e13_prev, e21_prev = df_15m['ema13'].iloc[idx-1], df_15m['ema21'].iloc[idx-1]
+        # Data Kemarin (t-1)
+        e13_prev = df_15m['ema13'].iloc[idx-1]
+        e21_prev = df_15m['ema21'].iloc[idx-1]
+        stoch_k_prev = df_15m['stoch_k'].iloc[idx-1]
         
-        # Hitung Gap EMA (%)
+        # Data 2 Candle Lalu (t-2) - PENTING BUAT V-SHAPE
+        e13_prev_2 = df_15m['ema13'].iloc[idx-2]
+        
         gap = abs(e13 - e21) / e21 * 100
 
-        # === LOGIKA BARU: STOCHASTIC FLEXIBLE (OR) ===
-        # Long: Diterima jika stoch sekarang < 40 ATAU stoch kemarin < 40
+        # Logic Stoch Memory
         is_cheap = (stoch_k < 40) or (stoch_k_prev < 40)
-        
-        # Short: Diterima jika stoch sekarang > 60 ATAU stoch kemarin > 60
         is_expensive = (stoch_k > 60) or (stoch_k_prev > 60)
 
-        # === SKENARIO 1: BULLISH (LONG) ===
-        if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
-            is_cross_up = (e13 > e21) and (e13_prev <= e21_prev)
-            is_bounce_up = (gap < 0.3) and (e13 > e13_prev) 
-            
-            if is_cross_up or is_bounce_up:
-                trigger = "⚔️ GOLDEN CROSS" if is_cross_up else "🧲 BOUNCE UP"
-                return (f"🟢 *LONG SIGNAL: {symbol}*\n"
-                        f"Action: {trigger}\n"
-                        f"Price: {price}\n"
-                        f"Stoch Now: {stoch_k:.2f}\n"
-                        f"Stoch Prev: {stoch_k_prev:.2f}\n"
-                        f"ADX 2H: {adx_val:.2f}")
+        # === TRIGGER LOGIC (STRICT) ===
+        
+        # 1. Murni Crossing (Silang)
+        # Sinyal valid HANYA jika kemarin di bawah, sekarang di atas
+        bullish_cross = (e13 > e21) and (e13_prev <= e21_prev)
+        bearish_cross = (e13 < e21) and (e13_prev >= e21_prev)
+        
+        # 2. Murni Curve/Bounce (Lekukan V)
+        # Sinyal valid HANYA jika kemarin EMA turun, sekarang EMA naik (Membentuk huruf V)
+        # Dan jaraknya wajib dekat (Gap Filter)
+        bullish_curve = (e13 > e13_prev) and (e13_prev <= e13_prev_2) and (gap < MAX_GAP_PERCENT)
+        bearish_curve = (e13 < e13_prev) and (e13_prev >= e13_prev_2) and (gap < MAX_GAP_PERCENT)
 
-        # === SKENARIO 2: BEARISH (SHORT) ===
+        # === EKSEKUSI SINYAL ===
+
+        # LONG (Trend Bullish + Trigger)
+        if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
+            if bullish_cross:
+                return f"🟢 *LONG: {symbol}*\nAction: ⚔️ GOLDEN CROSS (Baru Mulai!)\nPrice: {price}\nGap: {gap:.2f}%"
+            elif bullish_curve:
+                return f"🟢 *LONG: {symbol}*\nAction: 🧲 V-SHAPE BOUNCE (Lekukan)\nPrice: {price}\nGap: {gap:.2f}%"
+
+        # SHORT (Trend Bearish + Trigger)
         elif (price < e100 and e13 < e100 and e21 < e100 and is_expensive):
-            is_cross_down = (e13 < e21) and (e13_prev >= e21_prev)
-            is_resist_down = (gap < 0.3) and (e13 < e13_prev) 
-            
-            if is_cross_down or is_resist_down:
-                trigger = "💀 DEAD CROSS" if is_cross_down else "🧱 REJECT/RESIST"
-                return (f"🔴 *SHORT SIGNAL: {symbol}*\n"
-                        f"Action: {trigger}\n"
-                        f"Price: {price}\n"
-                        f"Stoch Now: {stoch_k:.2f}\n"
-                        f"Stoch Prev: {stoch_k_prev:.2f}\n"
-                        f"ADX 2H: {adx_val:.2f}")
+            if bearish_cross:
+                return f"🔴 *SHORT: {symbol}*\nAction: 💀 DEAD CROSS (Baru Mulai!)\nPrice: {price}\nGap: {gap:.2f}%"
+            elif bearish_curve:
+                return f"🔴 *SHORT: {symbol}*\nAction: 🧱 A-SHAPE REJECT (Lekukan)\nPrice: {price}\nGap: {gap:.2f}%"
 
         return None
 
@@ -105,11 +109,10 @@ def analyze_market(symbol):
         return None
 
 if __name__ == "__main__":
-    print("Mulai Scanning dengan Smart Stochastic...")
+    print("Scanning Curve & Cross...")
     coins = get_top_volume_pairs()
     for coin in coins:
         hasil = analyze_market(coin)
         if hasil:
             kirim_notif(hasil)
-            print(f"Notif dikirim: {coin}")
-    print("Selesai.")
+            print(f"Notif: {coin}")
