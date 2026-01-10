@@ -17,13 +17,14 @@ if not TOKEN_TELEGRAM or not CHAT_ID:
     print("Error: Token/Chat ID belum di-set!")
     sys.exit()
 
-# === BAGIAN PENTING: GANTI EXCHANGE ===
-# Kita pakai BINANCE US supaya tidak diblokir oleh Server GitHub (yang lokasi di USA)
-# Datanya 99% sama dengan Global, jadi sinyal tetap VALID.
-exchange = ccxt.binanceus({
+# === GANTI KE BYBIT (FUTURES/SWAP) ===
+# Bybit Futures punya likuiditas yang mirip dengan Binance Futures.
+# Chart-nya jauh lebih mulus daripada Binance US Spot.
+exchange = ccxt.bybit({
     'enableRateLimit': True,
-    # Kita tidak pakai 'future' karena Binance US cuma ada Spot. 
-    # Tapi tenang, harga Spot & Future itu mirroring/kembar.
+    'options': {
+        'defaultType': 'swap',  # KITA PAKAI DATA FUTURES (SWAP)
+    }
 })
 
 def kirim_notif(pesan):
@@ -33,19 +34,18 @@ def kirim_notif(pesan):
     except Exception as e:
         print(f"Gagal kirim Telegram: {e}")
 
-# 1. AMBIL TOP VOLUME 
+# 1. AMBIL TOP VOLUME (Bybit Futures)
 def get_top_volume_pairs():
-    print("Sedang mengambil data Top Volume (Binance US)...")
+    print("Sedang mengambil data Top Volume (Bybit Futures)...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
         for symbol, data in tickers.items():
-            # Filter USDT
-            if '/USDT' in symbol:
+            # Filter hanya USDT Perpetual (Simbol biasanya BTC/USDT:USDT)
+            if 'USDT' in symbol and ':' in symbol:
                 vol = data['quoteVolume'] if data['quoteVolume'] else 0
                 pairs.append({'symbol': symbol, 'val': vol})
         
-        # Kita ambil Top 50 dari market US
         hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
         print(f"✅ Sukses ambil {len(hasil)} koin Top Volume.")
         return hasil
@@ -53,20 +53,33 @@ def get_top_volume_pairs():
         print(f"❌ ERROR AMBIL VOLUME: {e}") 
         return []
 
-# 2. AMBIL TOP TICKS
+# 2. AMBIL TOP TICKS (Bybit Futures)
 def get_top_ticks_pairs():
-    print("Sedang mengambil data Top Ticks (Binance US)...")
+    # Note: Bybit API mungkin tidak selalu menyediakan 'count' (jumlah trade) secara gamblang di semua endpoint.
+    # Jadi kita gunakan Volume sebagai proxy utama jika count tidak tersedia, 
+    # atau kita coba ambil data openInterest/volume 24h.
+    # TAPI, untuk Bybit, Volume sudah cukup mewakili keramaian.
+    # Biar aman, kita pakai logika Volume juga tapi ambil irisan berbeda atau tetap coba count jika ada.
+    print("Sedang mengambil data Top Ticks (Bybit Futures)...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
         for symbol, data in tickers.items():
-            if '/USDT' in symbol:
-                # Binance US juga punya data 'count' (jumlah trade)
-                count = data['info']['count'] if 'info' in data and 'count' in data['info'] else 0
-                pairs.append({'symbol': symbol, 'val': int(count)})
+             if 'USDT' in symbol and ':' in symbol:
+                # Cek apakah field 'count' ada (jumlah trade)
+                # Di CCXT Bybit, kadang info ini ada di 'info'
+                count = 0
+                if 'info' in data and 'turnover24h' in data['info']:
+                     # Bybit pakai Turnover sebagai indikator aktivitas
+                     count = float(data['info']['turnover24h'])
+                elif 'quoteVolume' in data:
+                     count = data['quoteVolume']
+                
+                pairs.append({'symbol': symbol, 'val': count})
         
+        # Kita ambil Top 20
         hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(20)['symbol'].tolist()
-        print(f"✅ Sukses ambil {len(hasil)} koin Top Ticks.")
+        print(f"✅ Sukses ambil {len(hasil)} koin Top Ticks/Turnover.")
         return hasil
     except Exception as e:
         print(f"❌ ERROR AMBIL TICKS: {e}")
@@ -116,27 +129,29 @@ def analyze_market(symbol, max_gap, source_label):
         bearish_curve = (e13 < e13_prev) and (e13_prev >= e13_prev_2) and (gap < max_gap)
 
         icon = "💎" if source_label == "VOLUME" else "⚡"
+        
+        # Bersihkan nama symbol biar enak dibaca (Hapus :USDT)
+        clean_symbol = symbol.split(':')[0]
 
         if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
             if bullish_cross:
-                return f"{icon} *LONG ({source_label})*\nCoin: {symbol}\nAction: ⚔️ CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: ⚔️ CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bullish_curve:
-                return f"{icon} *LONG ({source_label})*\nCoin: {symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
 
         elif (price < e100 and e13 < e100 and e21 < e100 and is_expensive):
             if bearish_cross:
-                return f"{icon} *SHORT ({source_label})*\nCoin: {symbol}\nAction: 💀 CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 💀 CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bearish_curve:
-                return f"{icon} *SHORT ({source_label})*\nCoin: {symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
         return None
 
     except Exception as e:
-        # Debugging: Uncomment baris bawah kalau mau lihat error per koin
         # print(f"Error analisa {symbol}: {e}")
         return None
 
 if __name__ == "__main__":
-    print("🚀 Mulai Scanning (Binance US)...")
+    print("🚀 Mulai Scanning (Bybit Futures)...")
     
     # Ambil Data
     list_vol = get_top_volume_pairs()
