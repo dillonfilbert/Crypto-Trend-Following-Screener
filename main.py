@@ -151,34 +151,40 @@ def analyze_market(symbol, max_gap, source_label):
 if __name__ == "__main__":
     print("🚀 Mulai Scanning (Kraken USD Only)...")
     
-    # Ambil Data
+    # 1. AMBIL DATA MENTAH
     list_vol = get_top_volume_pairs()
     list_ticks = get_top_ticks_pairs()
     
+    # --- BAGIAN BARU: TAMPILKAN TERPISAH ---
+    print("\n" + "="*60)
+    print(f"💎 TOP 50 VOLUME (Gap Strict {GAP_STRICT}%):")
+    # Tampilkan list bersih tanpa /USD biar enak dibaca
+    print(", ".join([x.replace('/USD', '') for x in list_vol]))
+    
+    print("\n" + "-"*60)
+    print(f"⚡ TOP 20 TICKS (Gap Loose {GAP_LOOSE}%):")
+    print(", ".join([x.replace('/USD', '') for x in list_ticks]))
+    print("="*60 + "\n")
+    # ---------------------------------------
+
+    # 2. PROSES PENGGABUNGAN (LOGIKA PRIORITAS)
     target_coins = {}
 
-    # 1. Ticks
+    # Masukkan Ticks dulu (Gap Longgar)
     for coin in list_ticks:
         target_coins[coin] = {'gap': GAP_LOOSE, 'label': 'TICKS'}
 
-    # 2. Volume
+    # Timpa dengan Volume (Gap Ketat) - Prioritas Keamanan
+    # Jika koin ada di dua list (misal BTC), dia akan dipaksa ikut aturan Volume.
     for coin in list_vol:
         target_coins[coin] = {'gap': GAP_STRICT, 'label': 'VOLUME'}
 
-    print(f"📊 Total Koin Unik: {len(target_coins)}")
-    
-    # === TAMBAHAN: TAMPILKAN DAFTAR KOIN ===
-    if len(target_coins) > 0:
-        print("-" * 50)
-        print("📋 Daftar Koin yang Sedang Dipantau:")
-        # Print berjejer ke samping biar rapi dan hemat tempat
-        print(", ".join(target_coins.keys())) 
-        print("-" * 50)
-    # ========================================
+    print(f"📊 Total Koin Unik (Gabungan): {len(target_coins)}")
     
     if len(target_coins) == 0:
         print("⚠️ PERINGATAN: Masih 0 koin? Cek log error di atas.")
     
+    # 3. EKSEKUSI SCAN
     for coin, config in target_coins.items():
         hasil = analyze_market(coin, config['gap'], config['label'])
         if hasil:
