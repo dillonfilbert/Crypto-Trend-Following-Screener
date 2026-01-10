@@ -17,26 +17,39 @@ if not TOKEN_TELEGRAM or not CHAT_ID:
     print("Error: Token/Chat ID belum di-set!")
     sys.exit()
 
-exchange = ccxt.binance() 
+exchange = ccxt.binance({
+    'enableRateLimit': True,  # Penting supaya ga dianggap spam oleh Binance
+    'options': {'defaultType': 'future'} # Fokus ke Futures (biasanya datanya lebih lengkap/liquid)
+})
 
 def kirim_notif(pesan):
     url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage?chat_id={CHAT_ID}&text={pesan}&parse_mode=Markdown"
-    requests.get(url)
+    try:
+        requests.get(url)
+    except Exception as e:
+        print(f"Gagal kirim Telegram: {e}")
 
-# 1. AMBIL TOP VOLUME (Tetap Top 50 - Radar Luas)
+# 1. AMBIL TOP VOLUME (Dengan DEBUG ERROR)
 def get_top_volume_pairs():
+    print("Sedang mengambil data Top Volume...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
         for symbol, data in tickers.items():
             if '/USDT' in symbol and 'UP/' not in symbol and 'DOWN/' not in symbol:
-                pairs.append({'symbol': symbol, 'val': data['quoteVolume']})
-        # GANTI JADI 50
-        return pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
-    except: return []
+                vol = data['quoteVolume'] if data['quoteVolume'] else 0
+                pairs.append({'symbol': symbol, 'val': vol})
+        
+        hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
+        print(f"✅ Sukses ambil {len(hasil)} koin Top Volume.")
+        return hasil
+    except Exception as e:
+        print(f"❌ ERROR AMBIL VOLUME: {e}") # <--- INI AKAN MUNCUL DI LOG JIKA ERROR
+        return []
 
-# 2. AMBIL TOP TICKS (Dipersempit jadi Top 20 - Hanya Super Viral)
+# 2. AMBIL TOP TICKS (Dengan DEBUG ERROR)
 def get_top_ticks_pairs():
+    print("Sedang mengambil data Top Ticks...")
     try:
         tickers = exchange.fetch_tickers()
         pairs = []
@@ -44,9 +57,13 @@ def get_top_ticks_pairs():
             if '/USDT' in symbol and 'UP/' not in symbol and 'DOWN/' not in symbol:
                 count = data['info']['count'] if 'info' in data and 'count' in data['info'] else 0
                 pairs.append({'symbol': symbol, 'val': int(count)})
-        # GANTI JADI 20
-        return pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(20)['symbol'].tolist()
-    except: return []
+        
+        hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(20)['symbol'].tolist()
+        print(f"✅ Sukses ambil {len(hasil)} koin Top Ticks.")
+        return hasil
+    except Exception as e:
+        print(f"❌ ERROR AMBIL TICKS: {e}") # <--- INI AKAN MUNCUL DI LOG JIKA ERROR
+        return []
 
 # --- ANALISA UTAMA ---
 def analyze_market(symbol, max_gap, source_label):
@@ -68,7 +85,9 @@ def analyze_market(symbol, max_gap, source_label):
         stoch = ta.stoch(df_15m['h'], df_15m['l'], df_15m['c'], k=5, d=3, smooth_k=3)
         df_15m['stoch_k'] = stoch['STOCHk_5_3_3']
         
-        idx = -2
+        # === MODE ANTI TELAT ===
+        idx = -2  # Ambil Candle Close
+        
         price = df_15m['c'].iloc[idx]
         e13, e21, e100 = df_15m['ema13'].iloc[idx], df_15m['ema21'].iloc[idx], df_15m['ema100'].iloc[idx]
         stoch_k = df_15m['stoch_k'].iloc[idx]
@@ -93,43 +112,49 @@ def analyze_market(symbol, max_gap, source_label):
 
         if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
             if bullish_cross:
-                return f"{icon} *LONG ({source_label})*\nCoin: {symbol}\nAction: ⚔️ CROSS\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *LONG ({source_label})*\nCoin: {symbol}\nAction: ⚔️ CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bullish_curve:
-                return f"{icon} *LONG ({source_label})*\nCoin: {symbol}\nAction: 🧲 V-SHAPE\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *LONG ({source_label})*\nCoin: {symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
 
         elif (price < e100 and e13 < e100 and e21 < e100 and is_expensive):
             if bearish_cross:
-                return f"{icon} *SHORT ({source_label})*\nCoin: {symbol}\nAction: 💀 CROSS\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *SHORT ({source_label})*\nCoin: {symbol}\nAction: 💀 CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bearish_curve:
-                return f"{icon} *SHORT ({source_label})*\nCoin: {symbol}\nAction: 🧱 A-SHAPE\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                return f"{icon} *SHORT ({source_label})*\nCoin: {symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
         return None
 
-    except: return None
+    except Exception as e:
+        # Kita skip error kecil per koin biar ga spam log, 
+        # tapi kalau mau debug bisa uncomment print di bawah ini
+        # print(f"Error analisa {symbol}: {e}")
+        return None
 
 if __name__ == "__main__":
-    print("Mulai Scanning (Vol:50 | Ticks:20)...")
+    print("🚀 Mulai Scanning (Vol:50 | Ticks:20) [Mode: Debug]...")
     
     # Ambil Data
-    list_vol = get_top_volume_pairs()   # 50 Koin
-    list_ticks = get_top_ticks_pairs()  # 20 Koin
+    list_vol = get_top_volume_pairs()
+    list_ticks = get_top_ticks_pairs()
     
-    # Gabungkan dengan Prioritas
     target_coins = {}
 
-    # 1. Masukkan Ticks dulu (Gap Longgar 0.9%)
+    # 1. Ticks (Gap Longgar)
     for coin in list_ticks:
         target_coins[coin] = {'gap': GAP_LOOSE, 'label': 'TICKS'}
 
-    # 2. Timpa dengan Volume (Gap Ketat 0.5%)
-    # Jika koin ada di Top 50 Volume, dia dipaksa pakai aturan ketat, meskipun dia juga viral.
+    # 2. Volume (Gap Ketat) - Prioritas
     for coin in list_vol:
         target_coins[coin] = {'gap': GAP_STRICT, 'label': 'VOLUME'}
 
-    print(f"Total Koin Unik: {len(target_coins)}")
+    print(f"📊 Total Koin Unik: {len(target_coins)}")
+    
+    if len(target_coins) == 0:
+        print("⚠️ PERINGATAN: Tidak ada koin yang diambil. Cek error message di atas!")
     
     for coin, config in target_coins.items():
         hasil = analyze_market(coin, config['gap'], config['label'])
         if hasil:
             kirim_notif(hasil)
-            print(f"Notif: {coin}")
-
+            print(f"✅ Notif dikirim: {coin}")
+            
+    print("🏁 Selesai.")
