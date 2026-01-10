@@ -167,6 +167,15 @@ if __name__ == "__main__":
 
     print(f"📊 Total Koin Unik: {len(target_coins)}")
     
+    # === TAMBAHAN: TAMPILKAN DAFTAR KOIN ===
+    if len(target_coins) > 0:
+        print("-" * 50)
+        print("📋 Daftar Koin yang Sedang Dipantau:")
+        # Print berjejer ke samping biar rapi dan hemat tempat
+        print(", ".join(target_coins.keys())) 
+        print("-" * 50)
+    # ========================================
+    
     if len(target_coins) == 0:
         print("⚠️ PERINGATAN: Masih 0 koin? Cek log error di atas.")
     
