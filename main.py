@@ -32,7 +32,7 @@ def kirim_notif(pesan):
     except Exception as e:
         print(f"Gagal kirim Telegram: {e}")
 
-# --- FUNGSI AMBIL LIST KOIN (Tetap Sequential di awal gak masalah) ---
+# --- FUNGSI AMBIL LIST KOIN ---
 async def get_market_pairs():
     print("Sedang mengambil data pasar (Volume & Ticks)...")
     try:
@@ -42,6 +42,7 @@ async def get_market_pairs():
         
         for symbol, data in tickers.items():
             if symbol.endswith('/USD'):
+                # Filter Mata Uang Asing & Stablecoin
                 if 'EUR/' in symbol or 'GBP/' in symbol or 'AUD/' in symbol or 'CAD/' in symbol or 'JPY/' in symbol: continue
                 if symbol.startswith('USDT') or symbol.startswith('USDC') or symbol.startswith('DAI') or symbol.startswith('PYUSD'): continue
 
@@ -61,24 +62,22 @@ async def get_market_pairs():
         return [], []
 
 # --- ANALISA CORE (ASYNC) ---
-# Fungsi ini akan dijalankan berbarengan untuk banyak koin
 async def analyze_coin(symbol, max_gap, source_label):
     clean_symbol = symbol.replace('/USD', '')
     try:
         # 1. AMBIL DATA TREND (1H) - Limit 100
-        # Kita pakai 'await' supaya dia tidak memblokir koin lain saat nunggu data
         bars_trend = await exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
         df_trend = pd.DataFrame(bars_trend, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         adx_val = ta.adx(df_trend['h'], df_trend['l'], df_trend['c'], length=14)['ADX_14'].iloc[-2]
         
         if adx_val < 25: 
-            return f"❌ {clean_symbol} -> Skip (ADX 1H Lemah: {adx_val:.1f})"
+            return {'log': f"❌ {clean_symbol} -> Skip (ADX 1H Lemah: {adx_val:.1f})", 'notif': None}
 
-        # 2. AMBIL DATA EKSEKUSI (15m) - Limit 500 (Presisi)
+        # 2. AMBIL DATA EKSEKUSI (15m) - Limit 500 (Presisi EMA 100)
         bars_15m = await exchange.fetch_ohlcv(symbol, timeframe='15m', limit=500)
         df_15m = pd.DataFrame(bars_15m, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         
-        # Hitung Indikator (CPU Bound - Cepat)
+        # Hitung Indikator
         df_15m['ema13'] = ta.ema(df_15m['c'], length=13)
         df_15m['ema21'] = ta.ema(df_15m['c'], length=21)
         df_15m['ema100'] = ta.ema(df_15m['c'], length=100)
@@ -111,31 +110,30 @@ async def analyze_coin(symbol, max_gap, source_label):
         bullish_curve = (e13 > e13_prev) and (e13_prev <= e13_prev_2) and (gap < max_gap)
         bearish_curve = (e13 < e13_prev) and (e13_prev >= e13_prev_2) and (gap < max_gap)
 
-        icon = "💎" if source_label == "VOLUME" else "⚡"
         trend_short = "BULL" if e13 > e21 else "BEAR"
         log_msg = f"[{clean_symbol}] P:{price} | {trend_short} | E100:{e100:.2f} | Gap:{gap:.2f}% | Stoch:{stoch_k:.0f}({stoch_status})"
         
         result_msg = None
         log_output = ""
 
-        # Logic Decision
+        # --- LOGIC DECISION (FORMAT PESAN BARU) ---
         if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
             if bullish_cross:
                 log_output = f"✅ {log_msg} -> LONG CROSS"
-                result_msg = f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: ⚔️ CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                result_msg = f"🟢 LONG POTENTIAL ({source_label})\nCoin: {clean_symbol}\nAction: ⚔️ CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bullish_curve:
                 log_output = f"✅ {log_msg} -> LONG V-SHAPE"
-                result_msg = f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                result_msg = f"🟢 LONG POTENTIAL ({source_label})\nCoin: {clean_symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             else:
                 log_output = f"👀 {log_msg} -> Wait Trigger"
 
         elif (price < e100 and e13 < e100 and e21 < e100 and is_expensive):
             if bearish_cross:
                 log_output = f"✅ {log_msg} -> SHORT CROSS"
-                result_msg = f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 💀 CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                result_msg = f"🔴 SHORT POTENTIAL ({source_label})\nCoin: {clean_symbol}\nAction: 💀 CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bearish_curve:
                 log_output = f"✅ {log_msg} -> SHORT A-SHAPE"
-                result_msg = f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                result_msg = f"🔴 SHORT POTENTIAL ({source_label})\nCoin: {clean_symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             else:
                 log_output = f"👀 {log_msg} -> Wait Trigger"
         
@@ -153,7 +151,7 @@ async def analyze_coin(symbol, max_gap, source_label):
         return {'log': log_output, 'notif': result_msg}
 
     except Exception as e:
-        return f"Error analisa {clean_symbol}: {e}"
+        return {'log': f"Error analisa {clean_symbol}: {e}", 'notif': None}
 
 # --- MAIN LOOP ASYNC ---
 async def main():
@@ -182,11 +180,9 @@ async def main():
     
     tasks = []
     for coin, config in target_coins.items():
-        # Masukkan semua fungsi analisa ke dalam antrian tugas
         tasks.append(analyze_coin(coin, config['gap'], config['label']))
     
     # 3. JALANKAN SEMUA BERSAMAAN (GATHER)
-    # Ini adalah magic-nya. Python akan menembak request sekaligus (dengan rate limit safe)
     results = await asyncio.gather(*tasks)
     
     # 4. Proses Hasil
@@ -198,15 +194,12 @@ async def main():
                 kirim_notif(res['notif']) # Kirim Telegram
                 print("   └── 📨 Notifikasi terkirim!")
         else:
-            # Kalau error string
             print(res)
             
     print("-" * 60)
     print("🏁 Selesai.")
     
-    # Jangan lupa tutup koneksi async
     await exchange.close()
 
 if __name__ == "__main__":
-    # Jalankan Event Loop
     asyncio.run(main())
