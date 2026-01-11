@@ -39,10 +39,8 @@ def get_top_volume_pairs():
             if symbol.endswith('/USD'):
                 if 'EUR/' in symbol or 'GBP/' in symbol or 'AUD/' in symbol or 'CAD/' in symbol or 'JPY/' in symbol: continue
                 if symbol.startswith('USDT') or symbol.startswith('USDC') or symbol.startswith('DAI') or symbol.startswith('PYUSD'): continue
-
                 vol = data['quoteVolume'] if data['quoteVolume'] else 0
                 pairs.append({'symbol': symbol, 'val': vol})
-        
         hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
         print(f"✅ Sukses ambil {len(hasil)} koin Top Volume (USD).")
         return hasil
@@ -60,10 +58,8 @@ def get_top_ticks_pairs():
              if symbol.endswith('/USD'):
                 if 'EUR/' in symbol or 'GBP/' in symbol or 'AUD/' in symbol or 'CAD/' in symbol or 'JPY/' in symbol: continue
                 if symbol.startswith('USDT') or symbol.startswith('USDC') or symbol.startswith('DAI') or symbol.startswith('PYUSD'): continue
-
                 vol = data['quoteVolume'] if data['quoteVolume'] else 0
                 pairs.append({'symbol': symbol, 'val': vol})
-        
         hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(20)['symbol'].tolist()
         print(f"✅ Sukses ambil {len(hasil)} koin Top Activity (USD).")
         return hasil
@@ -71,13 +67,12 @@ def get_top_ticks_pairs():
         print(f"❌ ERROR AMBIL TICKS: {e}")
         return []
 
-# --- ANALISA UTAMA (DEBUG MODE) ---
+# --- ANALISA UTAMA (DEBUG MODE PRESISI) ---
 def analyze_market(symbol, max_gap, source_label):
     clean_symbol = symbol.replace('/USD', '')
     try:
-        # === FILTER TREN DIGANTI KE 1H (1 Jam) ===
-        # Kraken support 1h. Ini lebih responsif daripada 4h.
-        bars_trend = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        # 1. FILTER TREN (1H) - Ambil lebih banyak data (100) biar ADX stabil
+        bars_trend = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
         df_trend = pd.DataFrame(bars_trend, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         adx_val = ta.adx(df_trend['h'], df_trend['l'], df_trend['c'], length=14)['ADX_14'].iloc[-2]
         
@@ -85,8 +80,9 @@ def analyze_market(symbol, max_gap, source_label):
             print(f"❌ {clean_symbol} -> Skip (ADX 1H Lemah: {adx_val:.1f})")
             return None
 
-        # Cek Eksekusi (15m)
-        bars_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=100)
+        # 2. EKSEKUSI (15m) - FIX UTAMA DI SINI (limit=500)
+        # Kita ambil 500 candle supaya perhitungan EMA 100 jadi presisi (Warm-up cukup)
+        bars_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=500)
         df_15m = pd.DataFrame(bars_15m, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         
         df_15m['ema13'] = ta.ema(df_15m['c'], length=13)
@@ -123,7 +119,9 @@ def analyze_market(symbol, max_gap, source_label):
 
         icon = "💎" if source_label == "VOLUME" else "⚡"
         trend_short = "BULL" if e13 > e21 else "BEAR"
-        log_msg = f"[{clean_symbol}] P:{price} | {trend_short} | Gap:{gap:.2f}% | Stoch:{stoch_k:.0f}({stoch_status})"
+        
+        # LOG UPDATE: Saya tambahkan nilai E100 biar bisa kamu cek
+        log_msg = f"[{clean_symbol}] P:{price} | {trend_short} | E100:{e100:.2f} | Gap:{gap:.2f}% | Stoch:{stoch_k:.0f}({stoch_status})"
         
         # Logic
         if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
@@ -148,8 +146,15 @@ def analyze_market(symbol, max_gap, source_label):
         
         else:
             alasan = "Trend Salah"
-            if trend_short == "BULL" and not is_cheap: alasan = "Stoch Mahal"
-            if trend_short == "BEAR" and not is_expensive: alasan = "Stoch Murah"
+            # Debug detil kenapa Trend Salah
+            if trend_short == "BULL":
+                if not is_cheap: alasan = "Stoch Mahal"
+                elif price <= e100: alasan = "Price < EMA100" # Kasih tau spesifik
+            
+            if trend_short == "BEAR":
+                if not is_expensive: alasan = "Stoch Murah"
+                elif price >= e100: alasan = "Price > EMA100"
+
             print(f"❌ {log_msg} -> Skip ({alasan})")
 
         return None
@@ -159,7 +164,7 @@ def analyze_market(symbol, max_gap, source_label):
         return None
 
 if __name__ == "__main__":
-    print("🚀 Mulai Scanning (Kraken USD Only - Debug Mode 1H)...")
+    print("🚀 Mulai Scanning (Kraken USD - Limit 500 Candles)...")
     
     list_vol = get_top_volume_pairs()
     list_ticks = get_top_ticks_pairs()
