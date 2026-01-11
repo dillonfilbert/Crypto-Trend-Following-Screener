@@ -1,4 +1,5 @@
-import ccxt
+import asyncio
+import ccxt.async_support as ccxt  # PENTING: Pakai versi Async
 import pandas as pd
 import pandas_ta as ta
 import requests
@@ -10,88 +11,81 @@ TOKEN_TELEGRAM = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- SETTINGAN GAP DINAMIS ---
-GAP_STRICT = 0.5  # Gap untuk Top Volume (Aman)
-GAP_LOOSE  = 0.9  # Gap untuk Top Ticks (Agresif)
+GAP_STRICT = 0.5  # Gap untuk Top Volume
+GAP_LOOSE  = 0.9  # Gap untuk Top Ticks
 
 if not TOKEN_TELEGRAM or not CHAT_ID:
     print("Error: Token/Chat ID belum di-set!")
     sys.exit()
 
-# === KRAKEN (USD ONLY) ===
+# === KRAKEN (USD ONLY - ASYNC) ===
+# Kita pakai instance exchange yang sama untuk semua request
 exchange = ccxt.kraken({
-    'enableRateLimit': True,
+    'enableRateLimit': True,  # CCXT akan otomatis mengatur antrian biar gak kena ban
 })
 
 def kirim_notif(pesan):
+    # Telegram tetap synchronous (request biasa) biar simpel, karena cuma kirim sesekali
     url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage?chat_id={CHAT_ID}&text={pesan}&parse_mode=Markdown"
     try:
-        requests.get(url)
+        requests.get(url, timeout=10)
     except Exception as e:
         print(f"Gagal kirim Telegram: {e}")
 
-# 1. AMBIL TOP VOLUME (Hanya USD)
-def get_top_volume_pairs():
-    print("Sedang mengambil data Top Volume (Kraken USD)...")
+# --- FUNGSI AMBIL LIST KOIN (Tetap Sequential di awal gak masalah) ---
+async def get_market_pairs():
+    print("Sedang mengambil data pasar (Volume & Ticks)...")
     try:
-        tickers = exchange.fetch_tickers()
-        pairs = []
+        tickers = await exchange.fetch_tickers()
+        pairs_vol = []
+        pairs_ticks = []
+        
         for symbol, data in tickers.items():
             if symbol.endswith('/USD'):
                 if 'EUR/' in symbol or 'GBP/' in symbol or 'AUD/' in symbol or 'CAD/' in symbol or 'JPY/' in symbol: continue
                 if symbol.startswith('USDT') or symbol.startswith('USDC') or symbol.startswith('DAI') or symbol.startswith('PYUSD'): continue
-                vol = data['quoteVolume'] if data['quoteVolume'] else 0
-                pairs.append({'symbol': symbol, 'val': vol})
-        hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
-        print(f"✅ Sukses ambil {len(hasil)} koin Top Volume (USD).")
-        return hasil
-    except Exception as e:
-        print(f"❌ ERROR AMBIL VOLUME: {e}") 
-        return []
 
-# 2. AMBIL TOP TICKS (Hanya USD)
-def get_top_ticks_pairs():
-    print("Sedang mengambil data Top Ticks (Kraken USD)...")
-    try:
-        tickers = exchange.fetch_tickers()
-        pairs = []
-        for symbol, data in tickers.items():
-             if symbol.endswith('/USD'):
-                if 'EUR/' in symbol or 'GBP/' in symbol or 'AUD/' in symbol or 'CAD/' in symbol or 'JPY/' in symbol: continue
-                if symbol.startswith('USDT') or symbol.startswith('USDC') or symbol.startswith('DAI') or symbol.startswith('PYUSD'): continue
                 vol = data['quoteVolume'] if data['quoteVolume'] else 0
-                pairs.append({'symbol': symbol, 'val': vol})
-        hasil = pd.DataFrame(pairs).sort_values(by='val', ascending=False).head(20)['symbol'].tolist()
-        print(f"✅ Sukses ambil {len(hasil)} koin Top Activity (USD).")
-        return hasil
+                
+                # Masukkan ke list mentah
+                pairs_vol.append({'symbol': symbol, 'val': vol})
+                pairs_ticks.append({'symbol': symbol, 'val': vol}) # Di Kraken Vol ≈ Activity
+        
+        # Sortir
+        top_vol = pd.DataFrame(pairs_vol).sort_values(by='val', ascending=False).head(50)['symbol'].tolist()
+        top_ticks = pd.DataFrame(pairs_ticks).sort_values(by='val', ascending=False).head(20)['symbol'].tolist()
+        
+        return top_vol, top_ticks
     except Exception as e:
-        print(f"❌ ERROR AMBIL TICKS: {e}")
-        return []
+        print(f"❌ ERROR AMBIL DATA PASAR: {e}") 
+        return [], []
 
-# --- ANALISA UTAMA (DEBUG MODE PRESISI) ---
-def analyze_market(symbol, max_gap, source_label):
+# --- ANALISA CORE (ASYNC) ---
+# Fungsi ini akan dijalankan berbarengan untuk banyak koin
+async def analyze_coin(symbol, max_gap, source_label):
     clean_symbol = symbol.replace('/USD', '')
     try:
-        # 1. FILTER TREN (1H) - Ambil lebih banyak data (100) biar ADX stabil
-        bars_trend = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+        # 1. AMBIL DATA TREND (1H) - Limit 100
+        # Kita pakai 'await' supaya dia tidak memblokir koin lain saat nunggu data
+        bars_trend = await exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
         df_trend = pd.DataFrame(bars_trend, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         adx_val = ta.adx(df_trend['h'], df_trend['l'], df_trend['c'], length=14)['ADX_14'].iloc[-2]
         
         if adx_val < 25: 
-            print(f"❌ {clean_symbol} -> Skip (ADX 1H Lemah: {adx_val:.1f})")
-            return None
+            return f"❌ {clean_symbol} -> Skip (ADX 1H Lemah: {adx_val:.1f})"
 
-        # 2. EKSEKUSI (15m) - FIX UTAMA DI SINI (limit=500)
-        # Kita ambil 500 candle supaya perhitungan EMA 100 jadi presisi (Warm-up cukup)
-        bars_15m = exchange.fetch_ohlcv(symbol, timeframe='15m', limit=500)
+        # 2. AMBIL DATA EKSEKUSI (15m) - Limit 500 (Presisi)
+        bars_15m = await exchange.fetch_ohlcv(symbol, timeframe='15m', limit=500)
         df_15m = pd.DataFrame(bars_15m, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
         
+        # Hitung Indikator (CPU Bound - Cepat)
         df_15m['ema13'] = ta.ema(df_15m['c'], length=13)
         df_15m['ema21'] = ta.ema(df_15m['c'], length=21)
         df_15m['ema100'] = ta.ema(df_15m['c'], length=100)
         stoch = ta.stoch(df_15m['h'], df_15m['l'], df_15m['c'], k=5, d=3, smooth_k=3)
         df_15m['stoch_k'] = stoch['STOCHk_5_3_3']
         
-        # === DATA POINT ===
+        # Data Point
         idx = -2
         price = df_15m['c'].iloc[idx]
         e13, e21, e100 = df_15m['ema13'].iloc[idx], df_15m['ema21'].iloc[idx], df_15m['ema100'].iloc[idx]
@@ -119,75 +113,100 @@ def analyze_market(symbol, max_gap, source_label):
 
         icon = "💎" if source_label == "VOLUME" else "⚡"
         trend_short = "BULL" if e13 > e21 else "BEAR"
-        
-        # LOG UPDATE: Saya tambahkan nilai E100 biar bisa kamu cek
         log_msg = f"[{clean_symbol}] P:{price} | {trend_short} | E100:{e100:.2f} | Gap:{gap:.2f}% | Stoch:{stoch_k:.0f}({stoch_status})"
         
-        # Logic
+        result_msg = None
+        log_output = ""
+
+        # Logic Decision
         if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
             if bullish_cross:
-                print(f"✅ {log_msg} -> LONG CROSS")
-                return f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: ⚔️ CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                log_output = f"✅ {log_msg} -> LONG CROSS"
+                result_msg = f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: ⚔️ CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bullish_curve:
-                print(f"✅ {log_msg} -> LONG V-SHAPE")
-                return f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                log_output = f"✅ {log_msg} -> LONG V-SHAPE"
+                result_msg = f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             else:
-                print(f"👀 {log_msg} -> Wait Trigger")
+                log_output = f"👀 {log_msg} -> Wait Trigger"
 
         elif (price < e100 and e13 < e100 and e21 < e100 and is_expensive):
             if bearish_cross:
-                print(f"✅ {log_msg} -> SHORT CROSS")
-                return f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 💀 CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                log_output = f"✅ {log_msg} -> SHORT CROSS"
+                result_msg = f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 💀 CROSS (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             elif bearish_curve:
-                print(f"✅ {log_msg} -> SHORT A-SHAPE")
-                return f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
+                log_output = f"✅ {log_msg} -> SHORT A-SHAPE"
+                result_msg = f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             else:
-                print(f"👀 {log_msg} -> Wait Trigger")
+                log_output = f"👀 {log_msg} -> Wait Trigger"
         
         else:
             alasan = "Trend Salah"
-            # Debug detil kenapa Trend Salah
             if trend_short == "BULL":
                 if not is_cheap: alasan = "Stoch Mahal"
-                elif price <= e100: alasan = "Price < EMA100" # Kasih tau spesifik
-            
+                elif price <= e100: alasan = "Price < EMA100"
             if trend_short == "BEAR":
                 if not is_expensive: alasan = "Stoch Murah"
                 elif price >= e100: alasan = "Price > EMA100"
+            
+            log_output = f"❌ {log_msg} -> Skip ({alasan})"
 
-            print(f"❌ {log_msg} -> Skip ({alasan})")
-
-        return None
+        return {'log': log_output, 'notif': result_msg}
 
     except Exception as e:
-        print(f"Error analisa {clean_symbol}: {e}")
-        return None
+        return f"Error analisa {clean_symbol}: {e}"
 
-if __name__ == "__main__":
-    print("🚀 Mulai Scanning (Kraken USD - Limit 500 Candles)...")
+# --- MAIN LOOP ASYNC ---
+async def main():
+    print("🚀 Mulai Scanning (Kraken USD - ASYNC TURBO MODE)...")
     
-    list_vol = get_top_volume_pairs()
-    list_ticks = get_top_ticks_pairs()
+    # 1. Ambil List Koin
+    list_vol, list_ticks = await get_market_pairs()
     
+    if not list_vol:
+        print("Gagal ambil data pasar. Exit.")
+        await exchange.close()
+        return
+
     print("\n" + "="*60)
-    print(f"💎 TOP 50 VOLUME (Gap Strict {GAP_STRICT}%):")
-    print(", ".join([x.replace('/USD', '') for x in list_vol]))
+    print(f"💎 TOP 50 VOLUME: {', '.join([x.replace('/USD', '') for x in list_vol])}")
     print("-" * 60)
-    print(f"⚡ TOP 20 TICKS (Gap Loose {GAP_LOOSE}%):")
-    print(", ".join([x.replace('/USD', '') for x in list_ticks]))
+    print(f"⚡ TOP 20 TICKS: {', '.join([x.replace('/USD', '') for x in list_ticks])}")
     print("="*60 + "\n")
 
+    # 2. Siapkan Daftar Tugas (Tasks)
     target_coins = {}
     for coin in list_ticks: target_coins[coin] = {'gap': GAP_LOOSE, 'label': 'TICKS'}
-    for coin in list_vol: target_coins[coin] = {'gap': GAP_STRICT, 'label': 'VOLUME'}
-
-    print(f"📊 Total Koin Unik (Gabungan): {len(target_coins)}")
-    print("-" * 60)
+    for coin in list_vol: target_coins[coin] = {'gap': GAP_STRICT, 'label': 'VOLUME'} # Timpa jika duplikat
     
+    print(f"📊 Total Koin Unik: {len(target_coins)} -> Memproses Serentak...")
+    
+    tasks = []
     for coin, config in target_coins.items():
-        hasil = analyze_market(coin, config['gap'], config['label'])
-        if hasil:
-            kirim_notif(hasil)
+        # Masukkan semua fungsi analisa ke dalam antrian tugas
+        tasks.append(analyze_coin(coin, config['gap'], config['label']))
+    
+    # 3. JALANKAN SEMUA BERSAMAAN (GATHER)
+    # Ini adalah magic-nya. Python akan menembak request sekaligus (dengan rate limit safe)
+    results = await asyncio.gather(*tasks)
+    
+    # 4. Proses Hasil
+    print("-" * 60)
+    for res in results:
+        if isinstance(res, dict):
+            print(res['log']) # Print Log
+            if res['notif']:
+                kirim_notif(res['notif']) # Kirim Telegram
+                print("   └── 📨 Notifikasi terkirim!")
+        else:
+            # Kalau error string
+            print(res)
             
     print("-" * 60)
     print("🏁 Selesai.")
+    
+    # Jangan lupa tutup koneksi async
+    await exchange.close()
+
+if __name__ == "__main__":
+    # Jalankan Event Loop
+    asyncio.run(main())
