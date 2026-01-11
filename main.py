@@ -71,17 +71,18 @@ def get_top_ticks_pairs():
         print(f"❌ ERROR AMBIL TICKS: {e}")
         return []
 
-# --- ANALISA UTAMA (DENGAN LOG DETIL) ---
+# --- ANALISA UTAMA (DEBUG MODE) ---
 def analyze_market(symbol, max_gap, source_label):
     clean_symbol = symbol.replace('/USD', '')
     try:
-        # Cek Big Trend (ADX 2H)
-        bars_2h = exchange.fetch_ohlcv(symbol, timeframe='2h', limit=50)
-        df_2h = pd.DataFrame(bars_2h, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
-        adx_val = ta.adx(df_2h['h'], df_2h['l'], df_2h['c'], length=14)['ADX_14'].iloc[-2]
+        # === FILTER TREN DIGANTI KE 1H (1 Jam) ===
+        # Kraken support 1h. Ini lebih responsif daripada 4h.
+        bars_trend = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=50)
+        df_trend = pd.DataFrame(bars_trend, columns=['ts', 'o', 'h', 'l', 'c', 'v'])
+        adx_val = ta.adx(df_trend['h'], df_trend['l'], df_trend['c'], length=14)['ADX_14'].iloc[-2]
         
         if adx_val < 25: 
-            print(f"Running {clean_symbol}... ❌ Skip (ADX Lemah: {adx_val:.1f})")
+            print(f"❌ {clean_symbol} -> Skip (ADX 1H Lemah: {adx_val:.1f})")
             return None
 
         # Cek Eksekusi (15m)
@@ -106,10 +107,8 @@ def analyze_market(symbol, max_gap, source_label):
         stoch_k_prev = df_15m['stoch_k'].iloc[idx-1]
         e13_prev_2 = df_15m['ema13'].iloc[idx-2]
         
-        # Hitung Gap
         gap = abs(e13 - e21) / e21 * 100
         
-        # Status Stoch
         stoch_status = "NETRAL"
         is_cheap = (stoch_k < 40) or (stoch_k_prev < 40)
         is_expensive = (stoch_k > 60) or (stoch_k_prev > 60)
@@ -117,20 +116,16 @@ def analyze_market(symbol, max_gap, source_label):
         if is_cheap: stoch_status = "MURAH"
         elif is_expensive: stoch_status = "MAHAL"
 
-        # Logic
         bullish_cross = (e13 > e21) and (e13_prev <= e21_prev)
         bearish_cross = (e13 < e21) and (e13_prev >= e21_prev)
         bullish_curve = (e13 > e13_prev) and (e13_prev <= e13_prev_2) and (gap < max_gap)
         bearish_curve = (e13 < e13_prev) and (e13_prev >= e13_prev_2) and (gap < max_gap)
 
         icon = "💎" if source_label == "VOLUME" else "⚡"
-        
-        # === PRINT DATA LENGKAP UTK DEBUG ===
-        # Kita format supaya rapi di log
         trend_short = "BULL" if e13 > e21 else "BEAR"
-        log_msg = f"[{clean_symbol}] P:{price} | {trend_short} | E13:{e13:.2f} E21:{e21:.2f} | Gap:{gap:.2f}% | Stoch:{stoch_k:.0f}({stoch_status})"
+        log_msg = f"[{clean_symbol}] P:{price} | {trend_short} | Gap:{gap:.2f}% | Stoch:{stoch_k:.0f}({stoch_status})"
         
-        # Cek Kondisi
+        # Logic
         if (price > e100 and e13 > e100 and e21 > e100 and is_cheap):
             if bullish_cross:
                 print(f"✅ {log_msg} -> LONG CROSS")
@@ -139,8 +134,7 @@ def analyze_market(symbol, max_gap, source_label):
                 print(f"✅ {log_msg} -> LONG V-SHAPE")
                 return f"{icon} *LONG ({source_label})*\nCoin: {clean_symbol}\nAction: 🧲 V-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             else:
-                # Masuk Area Buy, tapi belum ada trigger
-                print(f"👀 {log_msg} -> Wait Trigger (Cross/Curve)")
+                print(f"👀 {log_msg} -> Wait Trigger")
 
         elif (price < e100 and e13 < e100 and e21 < e100 and is_expensive):
             if bearish_cross:
@@ -150,11 +144,9 @@ def analyze_market(symbol, max_gap, source_label):
                 print(f"✅ {log_msg} -> SHORT A-SHAPE")
                 return f"{icon} *SHORT ({source_label})*\nCoin: {clean_symbol}\nAction: 🧱 A-SHAPE (Closed)\nPrice: {price}\nGap: {gap:.2f}% (Limit: {max_gap}%)"
             else:
-                # Masuk Area Sell, tapi belum ada trigger
-                print(f"👀 {log_msg} -> Wait Trigger (Cross/Curve)")
+                print(f"👀 {log_msg} -> Wait Trigger")
         
         else:
-            # Tidak memenuhi syarat Tren Utama atau Stoch
             alasan = "Trend Salah"
             if trend_short == "BULL" and not is_cheap: alasan = "Stoch Mahal"
             if trend_short == "BEAR" and not is_expensive: alasan = "Stoch Murah"
@@ -167,7 +159,7 @@ def analyze_market(symbol, max_gap, source_label):
         return None
 
 if __name__ == "__main__":
-    print("🚀 Mulai Scanning (Kraken USD Only - Debug Mode)...")
+    print("🚀 Mulai Scanning (Kraken USD Only - Debug Mode 1H)...")
     
     list_vol = get_top_volume_pairs()
     list_ticks = get_top_ticks_pairs()
